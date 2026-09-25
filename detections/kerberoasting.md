@@ -1,48 +1,88 @@
-# Detection — Kerberoasting
+# Kerberoasting Detection
 
-## MITRE ATT&CK
+## Overview
 
-T1558.003 — Kerberoasting
+Kerberoasting is an Active Directory credential-access technique that targets accounts associated with Service Principal Names (SPNs).
 
-## Primary Telemetry
+A domain user can request a Kerberos service ticket for an SPN. The ticket can then be obtained and potentially subjected to offline password cracking.
 
-- Windows Security Event ID 4769
-- Sysmon Event ID 1 / 10 when endpoint correlation is available
+Service accounts can be valuable targets because they may use weak or old passwords and can sometimes have elevated privileges.
 
-## Detection Hypothesis
+---
 
-A user account generates an unusual burst of Kerberos TGS requests,
-especially for service accounts or SPNs that are outside its normal access
-pattern.
+## How Kerberoasting Works
 
-Additional context can increase confidence:
+The basic attack flow is:
 
-- RC4 encryption (`0x17`) where uncommon
-- Multiple service tickets in a short window
-- Unusual source host
-- Suspicious endpoint process activity
+Domain User  
+→ Requests Kerberos Service Ticket  
+→ Domain Controller  
+→ Service Ticket  
+→ Attacker obtains ticket material  
+→ Offline password cracking  
+→ Possible service account compromise
 
-## Correlation
+The important point for detection is that the Domain Controller generates security telemetry when the service ticket is requested.
+
+---
+
+## Detection Telemetry
+
+### Windows Event ID 4769
+
+**Event ID 4769 — A Kerberos service ticket was requested**
+
+Important fields include:
+
+| Field | Description |
+|---|---|
+| `Account_Name` | Account requesting the service ticket |
+| `Service_Name` | Service/SPN targeted by the request |
+| `Ticket_Encryption_Type` | Encryption type used by the ticket |
+| `Client_Address` | Source address of the requesting system |
+
+These fields can be used to investigate suspicious Kerberos service-ticket activity.
+
+---
+
+## RC4 as a Detection Signal
+
+One useful indicator is:
 
 ```text
-4769 anomaly
-   +
-unusual account/service targeting
-   +
-source-host anomaly
-   +
-endpoint activity
-   =
-higher-confidence investigation
-```
+Ticket_Encryption_Type = 0x17
 
-## False Positives
+0x17 represents RC4-HMAC.
 
-Potential legitimate causes include:
+RC4 can be useful as a detection signal when it is unusual in the environment. However, RC4 alone does not prove Kerberoasting because legitimate systems can also generate RC4 Kerberos traffic.
 
-- Administrative tools
-- Service discovery
-- Applications requesting many service tickets
-- Legacy systems that still use RC4
+A stronger detection combines:
 
-Tune thresholds and baselines for the environment.
+Event ID 4769
+Unusual encryption type
+Multiple service accounts being targeted
+Short time window
+Requesting account
+Source IP
+Normal behavior/baseline
+
+Splunk Investigation
+Identify suspicious RC4 service-ticket requests
+
+index=task2 EventCode=4769 Ticket_Encryption_Type=0x17 Service_Name!="*$" Service_Name!="krbtgt"
+| table _time, Account_Name, Service_Name, Ticket_Encryption_Type, Client_Address
+| sort _time
+
+Aggregate requests by account and source
+
+index=task2 EventCode=4769 Ticket_Encryption_Type=0x17 Service_Name!="*$" Service_Name!="krbtgt"
+| stats dc(Service_Name) as targeted_services count by Account_Name, Client_Address
+
+Investigation Result
+
+| Finding                   | Result        |
+| ------------------------- | ------------- |
+| Service accounts targeted | 9             |
+| Requesting account        | `emma.wilson` |
+| Source IP                 | `10.5.90.1`   |
+
