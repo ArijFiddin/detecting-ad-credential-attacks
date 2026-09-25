@@ -1,57 +1,88 @@
-# Kerberoasting
+# Kerberoasting Detection
 
 ## Overview
 
-Kerberoasting is an Active Directory credential-access technique in which an
-attacker requests Kerberos service tickets for accounts associated with
-Service Principal Names (SPNs) and attempts to crack the ticket material
-offline.
+Kerberoasting is an Active Directory credential-access technique that targets accounts associated with Service Principal Names (SPNs).
 
-From a Blue Team perspective, the important question is:
+A domain user can request a Kerberos service ticket for an SPN. The ticket can then be obtained and potentially subjected to offline password cracking.
 
-> What evidence would a domain controller and endpoint generate when this
-> activity occurs?
+Service accounts can be valuable targets because they may use weak or old passwords and can sometimes have elevated privileges.
 
-## Analyst Focus
+---
 
-Look for:
+## How Kerberoasting Works
 
-- Unusual Kerberos service-ticket requests
-- Service accounts that are not normally requested by a user
-- A burst of TGS requests in a short period
-- Use of RC4 (`0x17`) where it is unusual for the environment
-- Suspicious source hosts or accounts
-- Related process activity on the requesting host
+The basic attack flow is:
 
-## Important Telemetry
+Domain User  
+→ Requests Kerberos Service Ticket  
+→ Domain Controller  
+→ Service Ticket  
+→ Attacker obtains ticket material  
+→ Offline password cracking  
+→ Possible service account compromise
 
-A key Windows Security event is **Event ID 4769**, which records a Kerberos
-service-ticket request.
+The important point for detection is that the Domain Controller generates security telemetry when the service ticket is requested.
 
-Useful fields can include:
+---
 
-- Account name
-- Service name / SPN
-- Client address
-- Encryption type
-- Timestamp
+## Detection Telemetry
 
-## Investigation Questions
+### Windows Event ID 4769
 
-1. Which account requested the ticket?
-2. Which service account / SPN was targeted?
-3. Which host generated the request?
-4. How many requests occurred within the relevant time window?
-5. Is the encryption type expected in this environment?
-6. Is the requesting account normally expected to access the service?
-7. Are there related endpoint events?
+**Event ID 4769 — A Kerberos service ticket was requested**
 
-## MITRE ATT&CK
+Important fields include:
 
-**T1558.003 — Steal or Forge Kerberos Tickets: Kerberoasting**
+| Field | Description |
+|---|---|
+| `Account_Name` | Account requesting the service ticket |
+| `Service_Name` | Service/SPN targeted by the request |
+| `Ticket_Encryption_Type` | Encryption type used by the ticket |
+| `Client_Address` | Source address of the requesting system |
 
-## Lesson
+These fields can be used to investigate suspicious Kerberos service-ticket activity.
 
-A single Kerberos ticket request is not automatically malicious. Detection
-should consider baselines, volume, encryption type, account behavior, and
-source context.
+---
+
+## RC4 as a Detection Signal
+
+One useful indicator is:
+
+```text
+Ticket_Encryption_Type = 0x17
+
+0x17 represents RC4-HMAC.
+
+RC4 can be useful as a detection signal when it is unusual in the environment. However, RC4 alone does not prove Kerberoasting because legitimate systems can also generate RC4 Kerberos traffic.
+
+A stronger detection combines:
+
+Event ID 4769
+Unusual encryption type
+Multiple service accounts being targeted
+Short time window
+Requesting account
+Source IP
+Normal behavior/baseline
+
+Splunk Investigation
+Identify suspicious RC4 service-ticket requests
+
+index=task2 EventCode=4769 Ticket_Encryption_Type=0x17 Service_Name!="*$" Service_Name!="krbtgt"
+| table _time, Account_Name, Service_Name, Ticket_Encryption_Type, Client_Address
+| sort _time
+
+Aggregate requests by account and source
+
+index=task2 EventCode=4769 Ticket_Encryption_Type=0x17 Service_Name!="*$" Service_Name!="krbtgt"
+| stats dc(Service_Name) as targeted_services count by Account_Name, Client_Address
+
+Investigation Result
+
+| Finding                   | Result        |
+| ------------------------- | ------------- |
+| Service accounts targeted | 9             |
+| Requesting account        | `emma.wilson` |
+| Source IP                 | `10.5.90.1`   |
+
